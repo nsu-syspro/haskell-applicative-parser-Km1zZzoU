@@ -12,7 +12,7 @@ library
   hs-source-dirs: src
   ghc-options: -Werror -Wall
   build-depends: base >=4.7 && <5
-  default-language: Haskell2010
+  default-language: GHC2021
 
 test-suite test
   type: exitcode-stdio-1.0
@@ -31,4 +31,4 @@ test-suite test
     , tasty-quickcheck
     , tasty-smallcheck
     , directory
-  default-language: Haskell2010
+  default-language: GHC2021
