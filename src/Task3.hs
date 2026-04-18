@@ -4,8 +4,11 @@
 module Task3 where
 
 import Parser
-import Data.Char (toLower)
+import ParserCombinators
+import Control.Applicative ((<|>))
+import Data.Char (chr, isDigit, toLower)
 import Data.List (intercalate)
+import Text.Read (readMaybe)
 
 -- | JSON representation
 --
@@ -20,58 +23,134 @@ data JValue =
   | JNull
  deriving (Show, Eq)
 
--- | Parses JSON value
---
--- See full grammar at <https://www.json.org>
---
--- Usage example:
---
--- >>> parse json "{}"
--- Parsed (JObject []) (Input 2 "")
--- >>> parse json "null"
--- Parsed JNull (Input 4 "")
--- >>> parse json "true"
--- Parsed (JBool True) (Input 4 "")
--- >>> parse json "3.14"
--- Parsed (JNumber 3.14) (Input 4 "")
--- >>> parse json "{{}}"
--- Failed [PosError 0 (Unexpected '{'),PosError 1 (Unexpected '{')]
---
 json :: Parser JValue
-json = error "TODO: define json"
+json = spaces *> jvalue
 
--- * Rendering helpers
+jvalue :: Parser JValue
+jvalue = spaces *> (jobject <|> jarray <|> jstring <|> jnumber <|> jbool <|> jnull)
 
--- | Renders given JSON value as oneline string
+lexeme :: Parser a -> Parser a
+lexeme p = spaces *> p
+
+symbol :: String -> Parser String
+symbol s = lexeme (string s)
+
+comma, colon, openBrace, closeBrace, openBracket, closeBracket :: Parser String
+comma = symbol ","
+colon = symbol ":"
+openBrace = symbol "{"
+closeBrace = symbol "}"
+openBracket = symbol "["
+closeBracket = symbol "]"
+
+jobject :: Parser JValue
+jobject = JObject <$> (openBrace *> pair `sepBy` comma <* closeBrace)
+  where pair = (,) <$> (spaces *> stringContent <* colon) <*> jvalue
+
+jarray :: Parser JValue
+jarray = JArray <$> (openBracket *> jvalue `sepBy` comma <* closeBracket)
+
+stringContent :: Parser String
+stringContent = char '"' *> manyTill jchar (char '"')
+  where
+    jchar = normalChar <|> escapeChar
+    normalChar = satisfy (\c -> c /= '"' && c /= '\\')
+    escapeChar = char '\\' *> (escapeMap <|> unicodeEscape)
+    escapeMap = choice
+      [ '"'  <$ char '"',  '\\' <$ char '\\', '/' <$ char '/'
+      , '\n' <$ char 'n',  '\r' <$ char 'r',  '\f' <$ char 'f'
+      , '\t' <$ char 't',  '\b' <$ char 'b'
+      ]
+    unicodeEscape = char 'u' *> (hexToChar <$> count 4 hexDigit)
+    hexToChar hex = case readMaybe ("0x" ++ hex) of
+                      Just c -> chr c
+                      _      -> error "Invalid unicode escape"
+
+jstring :: Parser JValue
+jstring = JString <$> stringContent
+
+hexDigit :: Parser Char
+hexDigit = satisfy (\c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+
+jnumber :: Parser JValue
+jnumber = JNumber <$> lexeme number
+  where
+    number :: Parser Double
+    number = read <$> ( (++) <$> signPart
+                        <*> ( (++) <$> intPart
+                              <*> ( (++) <$> fracPart
+                                    <*> expPart ) ) )
+    signPart = option "" (("-" <$ char '-') <|> ("" <$ char '+'))
+    intPart = (char '0' *> pure "0") <|> ((:) <$> nonZeroDigit <*> many digit)
+    fracPart = option "" $ (:) <$> char '.' <*> some digit
+    expPart  = option "" $
+                 (:) <$> (char 'e' <|> char 'E')
+                     <*> ( (++) <$> option "" (("-" <$ char '-') <|> ("+" <$ char '+'))
+                               <*> some digit )
+
+nonZeroDigit :: Parser Char
+nonZeroDigit = satisfy (\c -> c >= '1' && c <= '9')
+
+digit :: Parser Char
+digit = satisfy isDigit
+
+jbool :: Parser JValue
+jbool = JBool <$> (True <$ string "true" <|> False <$ string "false")
+
+jnull :: Parser JValue
+jnull = JNull <$ string "null"
+
+-- combinators
+sepBy :: Parser a -> Parser sep -> Parser [a]
+sepBy p sep = (p `sepBy1` sep) <|> pure []
+
+sepBy1 :: Parser a -> Parser sep -> Parser [a]
+sepBy1 p sep = (:) <$> p <*> many (sep *> p)
+
+manyTill :: Parser a -> Parser end -> Parser [a]
+manyTill p end = go where go = (end *> pure []) <|> ((:) <$> p <*> go)
+
+option :: a -> Parser a -> Parser a
+option x p = p <|> pure x
+
+count :: Int -> Parser a -> Parser [a]
+count n p | n <= 0    = pure []
+          | otherwise = (:) <$> p <*> count (n-1) p
+
 render :: JValue -> String
 render = concatMap readable . renderTokens
-  where
-    -- Adds some nice spacing for readability
-    readable ":" = ": "
-    readable "," = ", "
-    readable s   = s
+  where readable ":" = ": "
+        readable "," = ", "
+        readable s   = s
 
--- | Renders given JSON value as list of separate tokens ready for pretty printing
 renderTokens :: JValue -> [String]
 renderTokens JNull        = ["null"]
 renderTokens (JBool b)    = [map toLower $ show b]
 renderTokens (JNumber d)  = [show d]
-renderTokens (JString s)  = ["\"" ++ s ++ "\""]
+renderTokens (JString s)  = ["\"" ++ escapeString s ++ "\""]
 renderTokens (JArray xs)  = ["["] ++ intercalate [","] (map renderTokens xs) ++ ["]"]
 renderTokens (JObject xs) = ["{"] ++ intercalate [","] (map renderPair xs) ++ ["}"]
  where
-  renderPair :: (String, JValue) -> [String]
-  renderPair (k, v) = ["\"" ++ k ++ "\""] ++ [":"] ++ renderTokens v
+  renderPair (k, v) = ["\"" ++ escapeString k ++ "\"", ":"] ++ renderTokens v
 
--- | Renders 'Parsed' or 'Failed' value as string
+escapeString :: String -> String
+escapeString = concatMap escapeChar
+  where
+    escapeChar '"'  = "\\\""
+    escapeChar '\\' = "\\\\"
+    escapeChar '\n' = "\\n"
+    escapeChar '\r' = "\\r"
+    escapeChar '\f' = "\\f"
+    escapeChar '\t' = "\\t"
+    escapeChar '\b' = "\\b"
+    escapeChar c    = [c]
+
 renderParsed :: Parsed JValue -> String
 renderParsed (Parsed v _) = render v
-renderParsed (Failed err) = show err
+renderParsed (Failed e)   = show e
 
--- | Parses given file as JSON and renders result
 renderJSONFile :: String -> IO String
-renderJSONFile file = renderParsed <$> parseJSONFile file
+renderJSONFile = fmap renderParsed . parseJSONFile
 
--- | Parses given file as JSON
 parseJSONFile :: String -> IO (Parsed JValue)
-parseJSONFile file = parse json <$> readFile file
+parseJSONFile f = parse json <$> readFile f
