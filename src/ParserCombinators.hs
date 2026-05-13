@@ -58,7 +58,7 @@ spaces = skipMany (satisfy (`elem` " \t\n\r"))
 -- Parsed "ba" (Position 2 "r")
 --
 choice :: (Foldable t, Alternative f) => t (f a) -> f a
-choice = foldr (<|>) empty
+choice = asum
 
 -- Discover and implement more useful parser combinators below
 --

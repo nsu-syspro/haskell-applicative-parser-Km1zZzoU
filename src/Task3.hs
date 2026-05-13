@@ -6,9 +6,8 @@ module Task3 where
 import Parser
 import ParserCombinators
 import Control.Applicative ((<|>))
-import Data.Char (chr, isDigit, toLower)
+import Data.Char ( isDigit, toLower)
 import Data.List (intercalate)
-import Text.Read (readMaybe)
 
 -- | JSON representation
 --
@@ -51,26 +50,19 @@ jarray :: Parser JValue
 jarray = JArray <$> (openBracket *> jvalue `sepBy` comma <* closeBracket)
 
 stringContent :: Parser String
-stringContent = char '"' *> manyTill jchar (char '"')
+stringContent = concat <$> (char '"' *> manyTill jchar (char '"'))
   where
-    jchar = normalChar <|> escapeChar
+    jchar = (pure <$> normalChar) <|> escapeChar
     normalChar = satisfy (\c -> c /= '"' && c /= '\\')
-    escapeChar = char '\\' *> (escapeMap <|> unicodeEscape)
-    escapeMap = choice
-      [ '"'  <$ char '"',  '\\' <$ char '\\', '/' <$ char '/'
-      , '\n' <$ char 'n',  '\r' <$ char 'r',  '\f' <$ char 'f'
-      , '\t' <$ char 't',  '\b' <$ char 'b'
-      ]
-    unicodeEscape = char 'u' *> (hexToChar <$> count 4 hexDigit)
-    hexToChar hex = case readMaybe ("0x" ++ hex) of
-                      Just c -> chr c
-                      _      -> error "Invalid unicode escape"
+    escapeChar = char '\\' *> (escapeSimple <|> unicodeEscape)
+    escapeSimple = (\c -> ['\\', c]) <$> satisfy (const True)
+    unicodeEscape = ("\\u" ++) <$> (char 'u' *> count 4 hexDigit)
 
 jstring :: Parser JValue
 jstring = JString <$> stringContent
 
 hexDigit :: Parser Char
-hexDigit = satisfy (\c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+hexDigit = satisfy (\c -> isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
 
 jnumber :: Parser JValue
 jnumber = JNumber <$> lexeme number
@@ -127,23 +119,11 @@ renderTokens :: JValue -> [String]
 renderTokens JNull        = ["null"]
 renderTokens (JBool b)    = [map toLower $ show b]
 renderTokens (JNumber d)  = [show d]
-renderTokens (JString s)  = ["\"" ++ escapeString s ++ "\""]
+renderTokens (JString s)  = ["\"" ++ s ++ "\""]
 renderTokens (JArray xs)  = ["["] ++ intercalate [","] (map renderTokens xs) ++ ["]"]
 renderTokens (JObject xs) = ["{"] ++ intercalate [","] (map renderPair xs) ++ ["}"]
  where
-  renderPair (k, v) = ["\"" ++ escapeString k ++ "\"", ":"] ++ renderTokens v
-
-escapeString :: String -> String
-escapeString = concatMap escapeChar
-  where
-    escapeChar '"'  = "\\\""
-    escapeChar '\\' = "\\\\"
-    escapeChar '\n' = "\\n"
-    escapeChar '\r' = "\\r"
-    escapeChar '\f' = "\\f"
-    escapeChar '\t' = "\\t"
-    escapeChar '\b' = "\\b"
-    escapeChar c    = [c]
+  renderPair (k, v) = ["\"" ++ k ++ "\"", ":"] ++ renderTokens v
 
 renderParsed :: Parsed JValue -> String
 renderParsed (Parsed v _) = render v
